@@ -1,0 +1,495 @@
+# Import modules
+import nltk
+nltk.download('words') # Needed when using Anaconda Jupyter Lab in testing
+nltk.download('punkt')
+nltk.download('averaged_perceptron_tagger')
+nltk.download('wordnet')
+from nltk.stem import WordNetLemmatizer
+import string
+import functools
+
+# Read and save the error text into a variable
+with open('error.txt') as f:
+    text_with_errors = f.read()    
+
+# Variables needed
+
+# POS Tag Groups
+verb_tags = ["VB", "VBD", "VBG", "VBN", "VBP", "VBZ"]
+noun_tags = ["NN", "NNP", "NNS", "NNPS"]
+adj_tags = ["JJ", "JJR", "JJS"]
+
+# NLTK Tools
+lemma = WordNetLemmatizer()
+word_dictionary = nltk.corpus.words.words()
+freq_dictionary = nltk.FreqDist(word_dictionary)
+
+# Character Groups
+vowels = ["a", "e", "i", "o", "u", "A", "E", "I", "O", "U"]
+ending_punctuations = [".", "?", "!", ")"]
+english_vocab_characters = []
+for i in string.ascii_letters:
+    english_vocab_characters.append(i)
+for i in string.punctuation:
+    english_vocab_characters.append(i)
+
+# Auxiliary Functions
+
+# Text Preprocessing: Tokenizing (sentences and words) and Tagging
+def tokenizing_and_tagging(text):
+    sents = nltk.sent_tokenize(text)
+    tagged_sents = []
+    for i in sents:
+        words = nltk.word_tokenize(i)
+        tagged = nltk.pos_tag(words)
+        tagged_sents.append(tagged)
+    return tagged_sents
+
+# Sentence Reconstructing: Reconstruct the NLTK tagged sentence into readable format
+# Considering punctuation spacing problems in real life application NLP (e.g. no space before fullstops),
+# join method is not chosen to achieve a better accuracy.
+def reconstructing_sentence(tagged_sent: list):
+    sent = ""
+    sent_length = len(tagged_sent)
+    for i in range(sent_length):
+        if tagged_sent[i][0] == tagged_sent[0][0]: # First word, no space before
+            sent += tagged_sent[0][0]
+        elif tagged_sent[i][0] in string.punctuation: # Punctuations, no space before
+            sent += tagged_sent[i][0]
+        else:
+            sent += " " + tagged_sent[i][0] # Normal words, 1 space before
+    sent = sent.replace("( ", "(")
+    return sent
+    
+# Checking Functions
+
+# 1. Capital Checking: Is the sentence starts with a capital letter?
+
+def capital_checking(sent):
+    first_word = sent[0][0]
+    if first_word.isalpha(): # Checking is the first word an English alphabet
+        if first_word[0].isupper(): # Checking is the first word starts with Capital letter
+            return False 
+        else:
+            return True
+
+# 2. Fragment Checking: Is the sentence contains at least one verb?
+
+def fragment_checking(sent):
+    for _, tags in sent:
+        if tags in verb_tags: # Checking is it at least 1 verb in the sentence
+            return False
+    return True
+
+# 3. Verb Form Checking: Is the sentence uses verbs in their correct forms?
+
+# 3.1 Passive Voice Checking:
+def verb_form_checking_passive_voice(sent: list): 
+    sent_length = len(sent)
+    for i in range(sent_length - 2):
+        if sent[i][1] in {"MD", "TO"}: # Finding modal verb/ to
+            if lemma.lemmatize(sent[i+1][0]) == "be": # If the next word is "be",
+                for j in range(i + 2, sent_length, 1): # find the first verb after be
+                    # (Because of considering the situation of adverbs added before the target checking verb)
+                    if sent[j][1] == "VBN" and sent[j][1] in verb_tags: # Correct
+                        return False
+                    elif sent[j][1] != "VBN" and sent[j][1] in verb_tags: # Not correct, error exists
+                        return True
+    return False
+
+# 3.2 General Verb Form Checking:
+def verb_form_checking_general_situation(sent: list):
+    if verb_form_checking_passive_voice(sent): # If error in passive checking exists, confirmed to return True
+        return True
+    else:
+        sent_length = len(sent)
+        for i in range(sent_length - 2):
+            if sent[i][1] == "MD" or sent[i][1] == "TO": # General Verb Form Checking(no words like adverbs before target) 
+                if sent[i+1][1] != "VB" and sent[i+1][1].startswith("V"):
+                    return True
+                elif lemma.lemmatize(sent[i+1][0]) != "be":  # General Verb Form Checking(have words like adverbs before target) 
+                    for j in range(i + 2, sent_length, 1):
+                        if i < sent_length - 3 and j < sent_length - 2 and sent[j][1] != "VB" and sent[j][1].startswith("V"):
+                            return True
+    return False
+
+# 4. Subject Verb Aggreement Checking: Is the sentence uses correct verb forms corresponding to their subjects?
+
+def subject_verb_aggrement_checking(sent):
+    sent_len = len(sent)
+    exist = False
+    for tags in range(sent_len):
+        if sent[tags][1] in {"VBD", "VBN", "VBG"}: # Subject Verb Aggrement errors will not occur when using these verbs
+            continue # Just skip checking
+        else:
+            if sent[tags][1] in {"VB", "VBP"} and not lemma.lemmatize(sent[tags][0]) == "be": # Counting to find not +s verbs
+                for ntags in range(tags+1, -1, -1): # Counting back to find corresponding noun/pronoun
+                    if sent[ntags][1] in {"NN", "NNP"} or sent[ntags][0] in {"He", "She", "It"}:
+                        exist = True # +s nouns/pronouns, True
+                else:
+                    return exist
+            # Vice Versa
+            elif sent[tags][1] == "VBZ":
+                for ntags in range(tags+1, -1, -1):
+                    if sent[ntags][1] in {"NNS", "NNPS"} or sent[ntags][0] in {"I", "You", "We", "They"}:
+                        exist = True
+                else:
+                    return exist
+    return exist
+
+# 5. Spelling Checking: Is the sentence spells every word correctly?
+# This is the strict version of the spelling checking. Only words tagged NNP or NNPS (proper nouns) by the NLTK,
+# or words in NLTK dictionary will be allowed.
+# There is a Loose Version that allows all capital starting words in the app version below,
+# but it is optional and may have a lower accuracy.
+
+# 5.1 Strict Spelling Checking
+def strict_spelling_checking(sent: list):
+    global wrong_words # It is more convenient by using global varibles for locating wrong words in the output
+    # hence the global declearation is used
+    # -------
+    # Some default variables needed
+    exist = False
+    lemma_form = ""
+    wrong_words = []
+    proper_nouns = []
+    for word, tag in sent:
+        if tag in {"NNP", "NNPS"}:
+            lemma_form = lemma.lemmatize(word, "n")
+            proper_nouns.append(lemma_form) # add proper nouns into the list
+        else: # lemmatization according to part of speech
+            # small letters for first word
+            if tag in noun_tags:
+                if word[0].isupper() and word == sent[0][0]:
+                    lemma_form = lemma.lemmatize(word.lower(), "n")
+                else:
+                    lemma_form = lemma.lemmatize(word, "n")
+            elif tag in verb_tags:
+                if word[0].isupper() and word == sent[0][0]:
+                    lemma_form = lemma.lemmatize(word.lower(), "v")
+                else:
+                    lemma_form = lemma.lemmatize(word, "v")
+            elif tag in adj_tags:
+                if word[0].isupper() and word == sent[0][0]:
+                    lemma_form = lemma.lemmatize(word.lower(), "a")
+                else:
+                    lemma_form = lemma.lemmatize(word, "a")
+            else: #default process without specific pos
+                if word[0].isupper() and word == sent[0][0]:
+                    lemma_form = lemma.lemmatize(word.lower())
+                else:
+                    lemma_form = lemma.lemmatize(word)
+        if lemma_form in proper_nouns: # skips when checked proper nouns
+            continue
+        elif lemma_form not in word_dictionary and lemma_form not in string.punctuation: # wrong words found
+            wrong_words.append(word)
+            exist = True
+    return exist
+
+# 5.2 Spelling Error Suggesting (Also able for loose spelling checking)
+def spelling_error_suggesting(errors: list):
+    suggestions = []
+    for i in errors:
+        # find the most frequent and closest edit distance suggestion to a wrong word
+        for word in freq_dictionary:
+            distance = nltk.edit_distance(word, i)
+            if distance == 1:
+                suggestions.append(word)
+                break
+    return suggestions
+
+# 5.3 Englsih Checker - Is the word a English word? 
+def is_not_english(word: str):
+    for char in word:
+        if char not in english_vocab_characters:
+            return True
+    return False
+
+
+# Extra checkings provided
+
+# 6. Punctuation End Suggesting: Is the sentence ended with correct punctuations like a fullstop?
+def punctuation_end_checking(sent: list):
+    if sent[-1][0] not in ending_punctuations:
+        return True
+    else:
+        return False
+
+# 7. A/An Checking: Is the determininer corrsponding to the noun?
+def a_an_checking(sent: list):
+    sent_len = len(sent)
+    for word in range(sent_len):
+        if sent[word][0] == "a":
+            next_word = sent[word+1][0]
+            if next_word[0] in vowels:
+                return True
+        elif sent[word][0] == "an":
+            next_word = sent[word+1][0]
+            if next_word[0] not in vowels:
+                return True
+    return False
+
+# Locating functions
+# Locate the error for V form, SV agreement and Spelling Error
+# Similar way as their corresponding checking functions, just changed the return value into the error word
+
+# 1. Subject Verb Aggrement Error Locating
+def subject_verb_aggrement_locating(sent):
+    sent_len = len(sent)
+    for tags in range(sent_len):
+        if sent[tags][1] in {"VBD", "VBN", "VBG"}:
+            continue
+        else:
+            if sent[tags][1] in {"VB", "VBP"}:
+                for ntags in range(tags + 1, -1, -1):
+                    if sent[ntags][1] in {"NN", "NNP"} or sent[ntags][0] in {"He", "She", "It"}:
+                        return sent[tags][0]
+            elif sent[tags][1] == "VBZ":
+                for ntags in range(tags + 1, -1, -1):
+                    if sent[ntags][1] in {"NNS", "NNPS"} or sent[ntags][0] in {"I", "You", "We", "They"}:
+                        return sent[tags][0]
+
+# 2. Verb Form Error Locating
+def verb_form_error_locating(sent: list):
+    sent_length = len(sent)
+    if verb_form_checking_passive_voice(sent):
+        for i in range(sent_length - 2):
+            if sent[i][1] in {"MD", "TO"}:
+                if sent[i+1][0] == "be":
+                    for j in range(i + 2, sent_length, 1):
+                        if sent[j][1] != "VBN" and sent[j][1] in verb_tags:
+                            return sent[j][0]
+    elif verb_form_checking_general_situation(sent) and not verb_form_checking_passive_voice(sent):
+        for i in range(sent_length - 2):
+            if sent[i][1] in {"MD", "TO"}:
+                if sent[i+1][1] != "VB" and sent[i+1][1].startswith("V"):
+                    return sent[i+1][0]
+                elif lemma.lemmatize(sent[i+1][0]) != "be":
+                    for j in range(i + 2, sent_length, 1):
+                        if i < sent_length - 3 and j < sent_length - 2 and sent[j][1] != "VB" and sent[j][1].startswith("V"):
+                            return sent[j][0]
+                        
+# 3. Spelling Error Locating
+# Used global variable, actually not need to define this function
+# Keeping, the code can be more readable
+def spelling_error_locating():
+    errors = wrong_words
+    return errors
+    
+# 4. A/An Locating
+def a_an_locating(sent: list):
+    sent_len = len(sent)
+    for word in range(sent_len):
+        if sent[word][0] == "a":
+            next_word = sent[word+1][0]
+            if next_word[0] in vowels:
+                return next_word
+        elif sent[word][0] == "an":
+            next_word = sent[word+1][0]
+            if next_word[0] not in vowels:
+                return next_word
+            
+# Main Function
+
+# Decorator: giving and printing descriptions to the errors
+def description(f):
+    @functools.wraps(f)
+    def wrapper(*args):
+        sents = f(*args)
+        error_description = ""
+        for sent in sents:
+            error_description += (f"-- {reconstructing_sentence(sent)}\n")
+            if capital_checking(sent):
+                error_description += (f"** Capitalization error: {sent[0][0]} \n")
+            if fragment_checking(sent):
+                error_description += (f"** Fragment error \n")
+            if verb_form_checking_general_situation(sent):
+                error_description += (f"** Verb form error: {verb_form_error_locating(sent)} \n")
+            if subject_verb_aggrement_checking(sent):
+                error_description += (f"** SV agreement error: {subject_verb_aggrement_locating(sent)} \n")
+            if strict_spelling_checking(sent):
+                for location in spelling_error_locating():
+                    error_description += (f"** Spell error: {location} \n")
+                    if is_not_english(location):
+                        error_description += ("Not English vocabulary! \n")
+                error_description += (f"Do you mean: \n")
+                for suggestion in spelling_error_suggesting(spelling_error_locating()):
+                    error_description += (f"\"{suggestion}\", \n")
+                error_description += (f"or other words? \n")
+            if punctuation_end_checking(sent):
+                error_description += (f"** Punctuation ending error \n")
+            if a_an_checking(sent):
+                error_description += (f"** A/An error: {a_an_locating(sent)} \n")
+            error_description += "\n" 
+        return error_description
+    return wrapper
+
+# Main Function: Finding sentences with errors
+@description
+def gec_checker_strict(sentences):
+    wrong_sents = []
+    for checks in sentences:
+        if capital_checking(checks) or fragment_checking(checks) or verb_form_checking_general_situation(checks)  or subject_verb_aggrement_checking(checks) or strict_spelling_checking(checks) or punctuation_end_checking(checks) or a_an_checking(checks):
+            wrong_sents.append(checks)
+    return wrong_sents
+
+# Output a txt file
+with open('error_output.txt', 'w') as f:
+    corrected_text = text_with_errors
+    corrected_text = tokenizing_and_tagging(corrected_text)
+    corrected_text = gec_checker_strict(corrected_text)
+    f.write(corrected_text) 
+    
+# Printing
+print(gec_checker_strict(tokenizing_and_tagging(text_with_errors)))
+
+
+# In[50]:
+
+
+# APP VERSION GEC CHECKER
+# 5.4 Loose Spelling Checking (Aux Function)
+# - Is the word a "proper name" (capital letter and not first word)? 
+def is_proper_name(sent: list):
+    proper_names = []
+    for word, _ in sent:
+        if word[0].isupper() and word != sent[0][0]:
+            proper_names.append(word)
+    return proper_names
+
+# 5.5 Loose Spelling Checking
+def loose_spelling_checking(sent: list):
+    global wrong_words
+    exist = False
+    lemma_form = ""
+    wrong_words = []
+    proper_nouns = is_proper_name(sent) # Proper names already found
+    for word, tag in sent:
+        if word in proper_nouns: # Skipping proper names already found
+            continue
+        else:
+            if tag in {"NNP", "NNPS"}:
+                lemma_form = lemma.lemmatize(word, "n")
+                proper_nouns.append(lemma_form)
+            else:
+                if tag in noun_tags:
+                    if word[0].isupper() and word == sent[0][0]:
+                        lemma_form = lemma.lemmatize(word.lower(), "n")
+                    else:
+                        lemma_form = lemma.lemmatize(word, "n")
+                elif tag in verb_tags:
+                    if word[0].isupper() and word == sent[0][0]:
+                        lemma_form = lemma.lemmatize(word.lower(), "v")
+                    else:
+                        lemma_form = lemma.lemmatize(word, "v")
+                elif tag in adj_tags:
+                    if word[0].isupper() and word == sent[0][0]:
+                        lemma_form = lemma.lemmatize(word.lower(), "a")
+                    else:
+                        lemma_form = lemma.lemmatize(word, "a")
+                else:
+                    if word[0].isupper() and word == sent[0][0]:
+                        lemma_form = lemma.lemmatize(word.lower())
+                    else:
+                        lemma_form = lemma.lemmatize(word)
+            if lemma_form in proper_nouns: # skips when checked proper nouns latestly found
+                continue
+            elif lemma_form not in word_dictionary and lemma_form not in string.punctuation: # wrong words found
+                wrong_words.append(word)
+                exist = True
+    return exist
+
+def menu():
+    print("""---------------------------\n
+---------------------------\n
+-------Grammar Error-------\n
+---------Correction--------\n
+---------------------------\n
+-------Please Input: ------\n
+---------------------------\n
+---------------------------\n
+Input:\n""")
+
+def spell_checking_modes():
+    print("Spell checking mode: \n1. Loose\n0. Strict\n")
+    choice = input()
+    while choice != "1" or choice != "0":
+        if choice == "1" or choice == "0":
+            confirmed_choice = choice
+            break
+        else:
+            print("Please input 1 or 0")
+            choice = input()
+    return confirmed_choice
+    
+def app_version_description(f):
+    @functools.wraps(f)
+    def wrapper(*args):
+        print(
+"""
+///////////////////////\n
+Errors:\n
+""")
+
+        sents = f(*args)
+        for sent in sents:
+            print(f"\n-- {reconstructing_sentence(sent)}\n")
+            if capital_checking(sent):
+                print(f"** Capitalization error: {sent[0][0]}")
+            if fragment_checking(sent):
+                print(f"** Fragment error")
+            if verb_form_checking_general_situation(sent):
+                print(f"** Verb form error: {verb_form_error_locating(sent)}")
+            if subject_verb_aggrement_checking(sent):
+                print(f"** SV agreement error: {subject_verb_aggrement_locating(sent)}")
+            if selection == "1":
+                if loose_spelling_checking(sent):
+                    for location in spelling_error_locating():
+                        print(f"** Spell error: {location}")
+                        if is_not_english(location):
+                            print("Not English vocabulary!")
+                    print(f"Do you mean:")
+                    for suggestion in spelling_error_suggesting(spelling_error_locating()):
+                        print(f"\"{suggestion}\",")
+                    print(f"or other words?")
+            elif selection == "0":
+                if strict_spelling_checking(sent):
+                    for location in spelling_error_locating():
+                        print(f"** Spell error: {location}")
+                        if is_not_english(location):
+                            print("Not English vocabulary!")
+                    print(f"Do you mean:")
+                    for suggestion in spelling_error_suggesting(spelling_error_locating()):
+                        print(f"\"{suggestion}\",")
+                    print(f"or other words?")
+            if punctuation_end_checking(sent):
+                print(f"** Punctuation ending error")
+            if a_an_checking(sent):
+                print(f"** A/An error: {a_an_locating(sent)}")
+    return wrapper
+
+@app_version_description
+def gec_checker_loose(sentences):
+    wrong_sents = []
+    for checks in sentences:
+        if capital_checking(checks) or fragment_checking(checks) or verb_form_checking_general_situation(checks) or subject_verb_aggrement_checking(checks) or loose_spelling_checking(checks) or punctuation_end_checking(checks) or a_an_checking(checks):
+            wrong_sents.append(checks)
+    return wrong_sents
+
+@app_version_description
+def gec_checker_strict(sentences):
+    wrong_sents = []
+    for checks in sentences:
+        if capital_checking(checks) or fragment_checking(checks) or verb_form_checking_general_situation(checks) or subject_verb_aggrement_checking(checks) or strict_spelling_checking(checks) or punctuation_end_checking(checks) or a_an_checking(checks):
+            wrong_sents.append(checks)
+    return wrong_sents
+            
+def app():
+    menu()
+    global selection
+    selection = spell_checking_modes()
+    if selection == "1":
+        gec_checker_loose(tokenizing_and_tagging(input("Loose: ")))
+    elif selection == "0":
+        gec_checker_strict(tokenizing_and_tagging(input("Strict: ")))
+app()
